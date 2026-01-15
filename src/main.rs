@@ -1,31 +1,51 @@
-use chrono::prelude::*;
+use clap::Parser;
+use directories;
 use rand::prelude::*;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead};
 
+#[derive(Parser)]
+struct Cli {
+    #[arg(short, long, value_name = "LENGTH", default_value = "3")]
+    length: usize,
+    #[arg(short, long, value_name = "TIMESTAMPFILE")]
+    output: Option<String>,
+    #[arg(short, long, value_name = "WORDLIST")]
+    words: Option<std::path::PathBuf>,
+}
+
 #[derive(Debug)]
 enum WordlistErr {
-    FileErr(io::Error),
+    FileErrStripped(io::Error),
+    FileErr(String, io::Error),
     NotWordList,
+}
+
+impl WordlistErr {
+    fn strip_filename(self) -> Self {
+        match self {
+            Self::FileErr(_, b) => Self::FileErrStripped(b),
+            e => e,
+        }
+    }
 }
 
 impl fmt::Display for WordlistErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FileErr(e) => e.fmt(f),
+            Self::FileErrStripped(e) => e.fmt(f),
+            Self::FileErr(fil, e) => {
+                write!(f, "{}: ", fil)?;
+                e.fmt(f)
+            }
             Self::NotWordList => write!(f, "Wordlist badly formatted"),
         }
     }
 }
 
 impl std::error::Error for WordlistErr {}
-
-impl From<io::Error> for WordlistErr {
-    fn from(value: io::Error) -> Self {
-        Self::FileErr(value)
-    }
-}
 
 #[derive(serde::Serialize)]
 struct MetaData {
@@ -34,11 +54,13 @@ struct MetaData {
     timestamp: String,
 }
 
-fn parse_wordlist(filename: &str) -> Result<Vec<String>, WordlistErr> {
-    io::BufReader::new(fs::File::open(filename)?)
+fn parse_wordlist(filename: &std::path::PathBuf) -> Result<Vec<String>, WordlistErr> {
+    let to_err =
+        |e| WordlistErr::FileErr(filename.clone().into_os_string().into_string().unwrap(), e);
+    io::BufReader::new(fs::File::open(filename).map_err(to_err)?)
         .lines()
         .map(|x| {
-            x.map_err(WordlistErr::from).and_then(|y| {
+            x.map_err(to_err).and_then(|y| {
                 let ty = y.trim();
                 if ty.contains(char::is_whitespace) {
                     Err(WordlistErr::NotWordList)
@@ -64,7 +86,12 @@ fn generate_name<'a>(wordlist: &'a Vec<String>, num_words: usize) -> String {
     output
 }
 
-fn generate_metadata(filename: &str, slug: &str, use_utc: bool) -> Result<(), io::Error> {
+fn default_wordlist_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("com", "CasBex", "kioku")
+        .map(|dirs| dirs.data_local_dir().join("wordlist.txt"))
+}
+
+fn generate_metadata(filename: &str, slug: &str) -> Result<(), io::Error> {
     let revision = git2::Repository::discover(".").ok().and_then(|rep| {
         rep.head()
             .ok()
@@ -95,11 +122,29 @@ fn generate_metadata(filename: &str, slug: &str, use_utc: bool) -> Result<(), io
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    let filepath = &args[1];
-    let wordlist = parse_wordlist(filepath)?;
-    // generate_metadata("tmp.jsonl", "test", true)?;
-    println!("{}", generate_name(&wordlist, 3));
+fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+    let filepath = cli.words;
+    // .or_else(default_wordlist_path)
+    // .ok_or("Could not find default word list")?;
+    let wordlist = if let Some(fpath) = filepath {
+        parse_wordlist(&fpath)?
+    } else {
+        let fpath = default_wordlist_path().ok_or("Could not find default wordlist location")?;
+        parse_wordlist(&fpath)
+            .map_err(|e| format!("Error loading default wordlist: {}", e.strip_filename()))?
+    };
+    let name = generate_name(&wordlist, cli.length);
+    if let Some(timestamp) = cli.output {
+        generate_metadata(timestamp.as_str(), name.as_str())?;
+    }
+    println!("{}", name);
     Ok(())
+}
+
+fn main() {
+    if let Err(e) = inner_main() {
+        eprintln!("{}", e);
+        std::process::exit(1);
+    }
 }
