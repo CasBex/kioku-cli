@@ -1,9 +1,7 @@
 use clap::Parser;
-use directories;
 use rand::prelude::*;
 use std::fmt;
 use std::fs;
-use std::io::Write;
 use std::io::{self, BufRead};
 
 #[derive(Parser)]
@@ -19,36 +17,20 @@ struct Cli {
     /// Specify wordlist to use
     #[arg(short, long, value_name = "WORDLIST")]
     words: Option<std::path::PathBuf>,
-    /// Remove default word list from system
-    #[arg(long)]
-    remove_wordlist: bool,
 }
 
 #[derive(Debug)]
 enum WordlistErr {
-    FileErrStripped(io::Error),
     FileErr(String, io::Error),
-    NotWordList,
-}
-
-impl WordlistErr {
-    fn strip_filename(self) -> Self {
-        match self {
-            Self::FileErr(_, b) => Self::FileErrStripped(b),
-            e => e,
-        }
-    }
 }
 
 impl fmt::Display for WordlistErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FileErrStripped(e) => e.fmt(f),
             Self::FileErr(fil, e) => {
                 write!(f, "{}: ", fil)?;
                 e.fmt(f)
             }
-            Self::NotWordList => write!(f, "Wordlist badly formatted"),
         }
     }
 }
@@ -62,20 +44,37 @@ struct MetaData {
     timestamp: String,
 }
 
+static WORDLIST: &str = include_str!("../assets/wordlist.txt");
+
+fn wordlist_filter_map<'a>(word: &'a str, dowarn: &mut bool) -> Option<&'a str> {
+    let tw = word.trim();
+    if tw.contains(char::is_whitespace) {
+        if *dowarn {
+            eprintln!("Wordlist contains invalid words, discarding");
+            *dowarn = false;
+        }
+        None
+    } else {
+        Some(tw)
+    }
+}
+
 fn parse_wordlist(filename: &std::path::PathBuf) -> Result<Vec<String>, WordlistErr> {
     let to_err = |e| WordlistErr::FileErr(filename.to_string_lossy().into_owned(), e);
-    io::BufReader::new(fs::File::open(filename).map_err(to_err)?)
-        .lines()
-        .map(|x| {
-            x.map_err(to_err).and_then(|y| {
-                let ty = y.trim();
-                if ty.contains(char::is_whitespace) {
-                    Err(WordlistErr::NotWordList)
-                } else {
-                    Ok(String::from(ty))
-                }
-            })
-        })
+    let mut dowarn = true;
+    Ok(
+        io::BufReader::new(fs::File::open(filename).map_err(to_err)?)
+            .lines()
+            .filter_map(|x| x.ok())
+            .filter_map(|x| wordlist_filter_map(x.as_str(), &mut dowarn).map(|y| y.to_string()))
+            .collect(),
+    )
+}
+
+fn ensure_wordlist() -> Vec<String> {
+    WORDLIST
+        .split_whitespace()
+        .filter_map(|x| wordlist_filter_map(x, &mut false).map(|y| y.to_string()))
         .collect()
 }
 
@@ -124,57 +123,13 @@ fn generate_metadata(filename: &str, slug: &str) -> Result<(), io::Error> {
     Ok(())
 }
 
-fn default_wordlist_path() -> Option<std::path::PathBuf> {
-    directories::ProjectDirs::from("com", "CasBex", "kioku")
-        .map(|dirs| dirs.data_local_dir().join("wordlist.txt"))
-}
-
-fn ensure_wordlist() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    const URL: &str = "http://localhost:8080/assets/wordlist.txt";
-
-    let path = default_wordlist_path().ok_or("cannot determine default wordlist location")?;
-
-    if !path.exists() {
-        print!(
-            "Could not find default wordlist. Install it from {}?\nY/n> ",
-            URL
-        );
-        let mut input = String::new();
-        io::stdout().flush().unwrap();
-        io::stdin().read_line(&mut input).unwrap();
-        println!("");
-        if input.trim().to_lowercase().starts_with("n") {
-            return Err("Not installing default wordlist".into());
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        println!("Downloading wordlist...");
-        let txt = reqwest::blocking::get(URL)?.text()?;
-        std::fs::write(&path, txt)?;
-        println!("Saved wordlist to {}", path.display());
-    }
-
-    Ok(path)
-}
-
-fn remove_wordlist() -> Result<(), Box<dyn std::error::Error>> {
-    let path = default_wordlist_path().ok_or("cannot determine default wordlist location")?;
-    Ok(fs::remove_file(path)?)
-}
-
 fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    if cli.remove_wordlist {
-        return remove_wordlist();
-    }
     let filepath = cli.words;
     let wordlist = if let Some(fpath) = filepath {
         parse_wordlist(&fpath)?
     } else {
-        let fpath = ensure_wordlist()?;
-        parse_wordlist(&fpath)
-            .map_err(|e| format!("Error loading default wordlist: {}", e.strip_filename()))?
+        ensure_wordlist()
     };
     let name = generate_name(&wordlist, cli.length);
     if let Some(timestamp) = cli.output {
