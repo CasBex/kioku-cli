@@ -380,7 +380,6 @@ gnome
 goal
 going
 gold
-goner
 good
 goth
 gouge
@@ -824,7 +823,6 @@ save
 scan
 scene
 seal
-sect
 sedan
 seed
 self

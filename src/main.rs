@@ -2,6 +2,7 @@ use clap::Parser;
 use rand::prelude::*;
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::io::{self, BufRead};
 
 #[derive(Parser)]
@@ -48,14 +49,17 @@ static WORDLIST: &str = include_str!("../assets/wordlist.txt");
 
 fn wordlist_filter_map<'a>(word: &'a str, dowarn: &mut bool) -> Option<&'a str> {
     let tw = word.trim();
-    if tw.contains(char::is_whitespace) {
+    if tw
+        .chars()
+        .all(|x| char::is_ascii_lowercase(&x) || char::is_ascii_uppercase(&x))
+    {
+        Some(tw)
+    } else {
         if *dowarn {
             eprintln!("Wordlist contains invalid words, discarding");
             *dowarn = false;
         }
         None
-    } else {
-        Some(tw)
     }
 }
 
@@ -110,16 +114,17 @@ fn generate_metadata(filename: &str, slug: &str) -> Result<(), io::Error> {
     if filename.ends_with(".jsonl") {
         opener.append(true);
     } else {
-        opener.write(true);
+        opener.write(true).truncate(true);
     }
-    let writer = if filename.ends_with(".jsonl") || filename.ends_with(".json") {
+    let mut writer = if filename.ends_with(".jsonl") || filename.ends_with(".json") {
         io::BufWriter::new(opener.open(filename)?)
     } else {
         let mut tmp = String::from(filename);
         tmp.push_str(".json");
         io::BufWriter::new(opener.open(tmp)?)
     };
-    serde_json::to_writer_pretty(writer, &meta).unwrap();
+    serde_json::to_writer_pretty(&mut writer, &meta).unwrap();
+    writer.write("\n".as_bytes()).unwrap();
     Ok(())
 }
 
