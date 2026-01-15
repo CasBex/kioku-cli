@@ -25,6 +25,7 @@ struct Cli {
 enum KiokuErr {
     BrokenPipe,
     ApplicationErr(anyhow::Error),
+    IOErr(io::Error),
 }
 
 impl From<anyhow::Error> for KiokuErr {
@@ -33,11 +34,21 @@ impl From<anyhow::Error> for KiokuErr {
     }
 }
 
+impl From<io::Error> for KiokuErr {
+    fn from(value: io::Error) -> Self {
+        match value.kind() {
+            io::ErrorKind::BrokenPipe => KiokuErr::BrokenPipe,
+            _ => KiokuErr::IOErr(value),
+        }
+    }
+}
+
 impl fmt::Display for KiokuErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             KiokuErr::BrokenPipe => Ok(()),
             KiokuErr::ApplicationErr(e) => write!(f, "{:#}", e),
+            KiokuErr::IOErr(e) => e.fmt(f),
         }
     }
 }
@@ -151,7 +162,7 @@ fn inner_main() -> Result<(), KiokuErr> {
         ensure_wordlist()
     };
     let name = generate_name(&wordlist, cli.length);
-    writeln!(io::stdout(), "{}", name).map_err(|_| KiokuErr::BrokenPipe)?;
+    writeln!(io::stdout(), "{}", name)?;
     if let Some(timestamp) = cli.output {
         generate_metadata(timestamp.as_str(), name.as_str())?;
     }
@@ -164,8 +175,8 @@ fn main() {
             KiokuErr::BrokenPipe => {
                 std::process::exit(141);
             }
-            KiokuErr::ApplicationErr(e) => {
-                eprintln!("{:#}", e);
+            e => {
+                eprintln!("{}", e);
                 std::process::exit(1);
             }
         }
