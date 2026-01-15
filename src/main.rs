@@ -1,20 +1,27 @@
 use clap::Parser;
 use directories;
 use rand::prelude::*;
-use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::io::{self, BufRead};
 
 #[derive(Parser)]
+#[command(version, about="Generate random human-readable strings for naming experiments and log associated metadata", long_about = None)] // Read from `Cargo.toml`
+
 struct Cli {
+    /// Length of the generated name in words
     #[arg(short, long, value_name = "LENGTH", default_value = "3")]
     length: usize,
-    #[arg(short, long, value_name = "TIMESTAMPFILE")]
+    /// Output metadata in JSON format to <FILE>
+    #[arg(short, long, value_name = "FILE")]
     output: Option<String>,
+    /// Specify wordlist to use
     #[arg(short, long, value_name = "WORDLIST")]
     words: Option<std::path::PathBuf>,
+    /// Remove default word list from system
+    #[arg(long)]
+    remove_wordlist: bool,
 }
 
 #[derive(Debug)]
@@ -151,11 +158,17 @@ fn ensure_wordlist() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     Ok(path)
 }
 
+fn remove_wordlist() -> Result<(), Box<dyn std::error::Error>> {
+    let path = default_wordlist_path().ok_or("cannot determine default wordlist location")?;
+    Ok(fs::remove_file(path)?)
+}
+
 fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    if cli.remove_wordlist {
+        return remove_wordlist();
+    }
     let filepath = cli.words;
-    // .or_else(default_wordlist_path)
-    // .ok_or("Could not find default word list")?;
     let wordlist = if let Some(fpath) = filepath {
         parse_wordlist(&fpath)?
     } else {
