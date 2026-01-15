@@ -4,6 +4,7 @@ use rand::prelude::*;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::io::{self, BufRead};
 
 #[derive(Parser)]
@@ -85,11 +86,6 @@ fn generate_name<'a>(wordlist: &'a [String], num_words: usize) -> String {
     output
 }
 
-fn default_wordlist_path() -> Option<std::path::PathBuf> {
-    directories::ProjectDirs::from("com", "CasBex", "kioku")
-        .map(|dirs| dirs.data_local_dir().join("wordlist.txt"))
-}
-
 fn generate_metadata(filename: &str, slug: &str) -> Result<(), io::Error> {
     let revision = git2::Repository::discover(".").ok().and_then(|rep| {
         rep.head()
@@ -121,6 +117,40 @@ fn generate_metadata(filename: &str, slug: &str) -> Result<(), io::Error> {
     Ok(())
 }
 
+fn default_wordlist_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("com", "CasBex", "kioku")
+        .map(|dirs| dirs.data_local_dir().join("wordlist.txt"))
+}
+
+fn ensure_wordlist() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    const URL: &str = "http://localhost:8080/assets/wordlist.txt";
+
+    let path = default_wordlist_path().ok_or("cannot determine default wordlist location")?;
+
+    if !path.exists() {
+        print!(
+            "Could not find default wordlist. Install it from {}?\nY/n> ",
+            URL
+        );
+        let mut input = String::new();
+        io::stdout().flush().unwrap();
+        io::stdin().read_line(&mut input).unwrap();
+        println!("");
+        if input.trim().to_lowercase().starts_with("n") {
+            return Err("Not installing default wordlist".into());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        println!("Downloading wordlist...");
+        let txt = reqwest::blocking::get(URL)?.text()?;
+        std::fs::write(&path, txt)?;
+        println!("Saved wordlist to {}", path.display());
+    }
+
+    Ok(path)
+}
+
 fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let filepath = cli.words;
@@ -129,7 +159,7 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     let wordlist = if let Some(fpath) = filepath {
         parse_wordlist(&fpath)?
     } else {
-        let fpath = default_wordlist_path().ok_or("Could not find default wordlist location")?;
+        let fpath = ensure_wordlist()?;
         parse_wordlist(&fpath)
             .map_err(|e| format!("Error loading default wordlist: {}", e.strip_filename()))?
     };
