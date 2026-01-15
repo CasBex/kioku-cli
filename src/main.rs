@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::Parser;
 use rand::prelude::*;
 use std::fmt;
@@ -21,26 +22,31 @@ struct Cli {
 }
 
 #[derive(Debug)]
-enum WordlistErr {
-    FileErr(String, io::Error),
+enum KiokuErr {
+    BrokenPipe,
+    ApplicationErr(anyhow::Error),
 }
 
-impl fmt::Display for WordlistErr {
+impl From<anyhow::Error> for KiokuErr {
+    fn from(value: anyhow::Error) -> Self {
+        KiokuErr::ApplicationErr(value)
+    }
+}
+
+impl fmt::Display for KiokuErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FileErr(fil, e) => {
-                write!(f, "{}: ", fil)?;
-                e.fmt(f)
-            }
+            KiokuErr::BrokenPipe => Ok(()),
+            KiokuErr::ApplicationErr(e) => write!(f, "{:#}", e),
         }
     }
 }
 
-impl std::error::Error for WordlistErr {}
+impl std::error::Error for KiokuErr {}
 
 #[derive(serde::Serialize)]
-struct MetaData {
-    label: String,
+struct MetaData<'a> {
+    label: &'a str,
     revision: Option<String>,
     timestamp: String,
 }
@@ -63,15 +69,19 @@ fn wordlist_filter_map<'a>(word: &'a str, dowarn: &mut bool) -> Option<&'a str> 
     }
 }
 
-fn parse_wordlist(filename: &std::path::PathBuf) -> Result<Vec<String>, WordlistErr> {
-    let to_err = |e| WordlistErr::FileErr(filename.to_string_lossy().into_owned(), e);
+fn parse_wordlist(filename: &std::path::PathBuf) -> anyhow::Result<Vec<String>> {
     let mut dowarn = true;
     Ok(
-        io::BufReader::new(fs::File::open(filename).map_err(to_err)?)
-            .lines()
-            .filter_map(|x| x.ok())
-            .filter_map(|x| wordlist_filter_map(x.as_str(), &mut dowarn).map(|y| y.to_string()))
-            .collect(),
+        io::BufReader::new(fs::File::open(filename).with_context(|| {
+            format!(
+                "Failed to read wordlist file {}",
+                filename.to_string_lossy()
+            )
+        })?)
+        .lines()
+        .filter_map(|x| x.ok())
+        .filter_map(|x| wordlist_filter_map(x.as_str(), &mut dowarn).map(|y| y.to_string()))
+        .collect(),
     )
 }
 
@@ -96,7 +106,7 @@ fn generate_name<'a>(wordlist: &'a [String], num_words: usize) -> String {
     output
 }
 
-fn generate_metadata(filename: &str, slug: &str) -> Result<(), io::Error> {
+fn generate_metadata(filename: &str, slug: &str) -> anyhow::Result<()> {
     let revision = git2::Repository::discover(".").ok().and_then(|rep| {
         rep.head()
             .ok()
@@ -105,30 +115,34 @@ fn generate_metadata(filename: &str, slug: &str) -> Result<(), io::Error> {
     });
     let timestamp = chrono::Local::now().to_rfc3339();
     let meta = MetaData {
-        label: slug.to_string(),
+        label: slug,
         revision,
         timestamp,
     };
-    let mut opener = std::fs::OpenOptions::new();
+    let mut opener = fs::OpenOptions::new();
     opener.create(true);
     if filename.ends_with(".jsonl") {
         opener.append(true);
     } else {
         opener.write(true).truncate(true);
     }
-    let mut writer = if filename.ends_with(".jsonl") || filename.ends_with(".json") {
-        io::BufWriter::new(opener.open(filename)?)
+    let fname = if filename.ends_with(".jsonl") || filename.ends_with(".json") {
+        filename.to_string()
     } else {
-        let mut tmp = String::from(filename);
-        tmp.push_str(".json");
-        io::BufWriter::new(opener.open(tmp)?)
+        format!("{}.json", filename)
     };
+    let mut writer = io::BufWriter::new(
+        opener
+            .open(fname.as_str())
+            .with_context(|| format!("Failed to write metadata file {}", fname))?,
+    );
+
     serde_json::to_writer_pretty(&mut writer, &meta).unwrap();
     writer.write("\n".as_bytes()).unwrap();
     Ok(())
 }
 
-fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
+fn inner_main() -> Result<(), KiokuErr> {
     let cli = Cli::parse();
     let filepath = cli.words;
     let wordlist = if let Some(fpath) = filepath {
@@ -137,16 +151,23 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
         ensure_wordlist()
     };
     let name = generate_name(&wordlist, cli.length);
+    writeln!(io::stdout(), "{}", name).map_err(|_| KiokuErr::BrokenPipe)?;
     if let Some(timestamp) = cli.output {
         generate_metadata(timestamp.as_str(), name.as_str())?;
     }
-    println!("{}", name);
     Ok(())
 }
 
 fn main() {
     if let Err(e) = inner_main() {
-        eprintln!("{}", e);
-        std::process::exit(1);
+        match e {
+            KiokuErr::BrokenPipe => {
+                std::process::exit(141);
+            }
+            KiokuErr::ApplicationErr(e) => {
+                eprintln!("{:#}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
