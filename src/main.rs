@@ -55,8 +55,7 @@ struct MetaData {
 }
 
 fn parse_wordlist(filename: &std::path::PathBuf) -> Result<Vec<String>, WordlistErr> {
-    let to_err =
-        |e| WordlistErr::FileErr(filename.clone().into_os_string().into_string().unwrap(), e);
+    let to_err = |e| WordlistErr::FileErr(filename.to_string_lossy().into_owned(), e);
     io::BufReader::new(fs::File::open(filename).map_err(to_err)?)
         .lines()
         .map(|x| {
@@ -72,7 +71,7 @@ fn parse_wordlist(filename: &std::path::PathBuf) -> Result<Vec<String>, Wordlist
         .collect()
 }
 
-fn generate_name<'a>(wordlist: &'a Vec<String>, num_words: usize) -> String {
+fn generate_name<'a>(wordlist: &'a [String], num_words: usize) -> String {
     let mut rng = rand::rng();
     let mut output = String::new();
     for word in (0..num_words).map(|_| wordlist[rng.random_range(0..wordlist.len())].as_str()) {
